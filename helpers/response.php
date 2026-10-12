@@ -2,31 +2,32 @@
 declare(strict_types=1);
 
 /**
- * Helper respons JSON dan utilitas request untuk SIM Dosen API.
+ * Helper respons JSON, CORS, dan utilitas request untuk SIM Dosen API.
  *
  * Format respons sukses:
  *   { "success": true,  "message": "...", "data": ... }
  * Format respons error:
  *   { "success": false, "message": "...", "data": null }
  *
- * Penambahan opsional (bila ada):
- *   - "meta"   : informasi pagination (daftar data)
+ * Key tambahan opsional:
+ *   - "meta"   : pagination (daftar data)
  *   - "errors" : detail field yang gagal validasi (HTTP 422)
  */
 
 /**
  * Kirim respons JSON lalu hentikan eksekusi.
  *
- * @param bool     $success Status keberhasilan.
- * @param string   $message Pesan untuk klien.
- * @param mixed    $data    Data payload (null untuk error).
- * @param int      $status  HTTP status code.
- * @param ?array   $extra   Key tambahan opsional, mis. ['meta' => [...]].
+ * @param bool   $success Status keberhasilan.
+ * @param string $message Pesan untuk klien.
+ * @param mixed  $data    Data payload (null untuk error).
+ * @param int    $status  HTTP status code.
+ * @param ?array $extra   Key tambahan, mis. ['meta' => [...]] atau ['errors' => [...]].
  */
 function json_response(bool $success, string $message, mixed $data = null, int $status = 200, ?array $extra = null): never
 {
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
+    header('X-Content-Type-Options: nosniff');
 
     $payload = [
         'success' => $success,
@@ -135,8 +136,8 @@ function query_int(string $key, int $default, int $min, int $max): int
  * - Kolom bertanda 'required' wajib berisi teks non-kosong.
  * - Semua nilai harus berupa teks (string) atau null, maksimal 'max' karakter.
  *
- * @param array<string, mixed> $body  Hasil read_json_body()
- * @param array<string, array> $rules ['kolom' => ['required' => true, 'max' => 150], ...]
+ * @param array<string, mixed>                $body  Hasil read_json_body().
+ * @param array<string, array<string, mixed>> $rules ['kolom' => ['required' => true, 'max' => 150], ...]
  * @return array<string, string|null> Nilai yang sudah bersih per kolom yang dikirim.
  */
 function validate_fields(array $body, array $rules): array
@@ -200,4 +201,39 @@ function validate_fields(array $body, array $rules): array
     }
 
     return $clean;
+}
+
+/**
+ * CORS: izinkan hanya origin frontend yang terdaftar di env ALLOWED_ORIGINS
+ * (dipisah koma). Request OPTIONS (preflight) dijawab 204.
+ *
+ * Origin di luar daftar: header CORS tidak dikirim sama sekali —
+ * browser memblokir aksesnya; klien non-browser (curl/Postman) tidak terpengaruh.
+ */
+function cors_handling(): void
+{
+    $method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
+    $origin = (string) ($_SERVER['HTTP_ORIGIN'] ?? '');
+
+    $allowedEnv = env('ALLOWED_ORIGINS');
+    if ($allowedEnv === null || trim($allowedEnv) === '') {
+        // Default: origin frontend yang umum dipakai saat development.
+        $allowedEnv = 'http://localhost:3000,http://localhost:5173,http://localhost:8080';
+    }
+
+    $allowed = array_map('trim', explode(',', $allowedEnv));
+
+    if ($origin !== '' && in_array($origin, $allowed, true)) {
+        header('Access-Control-Allow-Origin: ' . $origin);
+        header('Vary: Origin');
+        header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
+        header('Access-Control-Max-Age: 86400');
+    }
+
+    if ($method === 'OPTIONS') {
+        http_response_code(204);
+        header('Content-Length: 0');
+        exit;
+    }
 }

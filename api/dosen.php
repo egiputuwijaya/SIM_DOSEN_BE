@@ -10,6 +10,12 @@ declare(strict_types=1);
  *   PUT    /api/dosen/{id}   perbarui seluruh data dosen (replace)
  *   PATCH  /api/dosen/{id}   perbarui sebagian data dosen
  *   DELETE /api/dosen/{id}   hapus dosen
+ *
+ * Kolom mengikuti skema tabel `dosen` di sim_dosen.sql:
+ *   id (bigint unsigned, PK, auto-increment), nomor_registrasi, nuptk, nama,
+ *   nip, jabatan_fungsional, kepangkatan, pendidikan_terakhir, rumpun_ilmu,
+ *   status_serdos, status_pegawai, ikatan_kerja, status_aktivitas,
+ *   penempatan, created_at, updated_at.
  */
 
 require_once __DIR__ . '/../helpers/response.php';
@@ -17,11 +23,11 @@ require_once __DIR__ . '/../config/database.php';
 
 /**
  * Whitelist kolom yang boleh diterima dari request (disesuaikan dengan
- * skema tabel `dosen`). Kolom `id`, `created_at`, `updated_at` tidak
- * boleh dikontrol dari request.
+ * skema tabel `dosen`). Kolom `id`, `created_at`, `updated_at` dikelola
+ * otomatis oleh database dan tidak boleh dikontrol dari request.
  *
  * @param bool $namaWajib true untuk POST/PUT, false untuk PATCH.
- * @return array<string, array>
+ * @return array<string, array<string, mixed>>
  */
 function dosen_rules(bool $namaWajib = true): array
 {
@@ -79,13 +85,15 @@ function dosen_write(int $id, array $values): void
     }
     $params[':id'] = $id;
 
-    $sql = 'UPDATE dosen SET ' . implode(', ', $sets) . ' WHERE id = :id';
+    $sql  = 'UPDATE dosen SET ' . implode(', ', $sets) . ' WHERE id = :id';
     $stmt = db()->prepare($sql);
     $stmt->execute($params);
 }
 
 /**
  * Dispatcher endpoint /api/dosen.
+ *
+ * @param ?int $id null untuk koleksi (/api/dosen), ID untuk item (/api/dosen/{id}).
  */
 function handle_dosen(string $method, ?int $id): void
 {
@@ -98,7 +106,7 @@ function handle_dosen(string $method, ?int $id): void
                 dosen_store();
                 return;
             default:
-                header('Allow: GET, POST');
+                header('Allow: GET, POST, OPTIONS');
                 json_response(false, 'Metode request tidak diizinkan untuk endpoint ini', null, 405);
         }
     }
@@ -117,7 +125,7 @@ function handle_dosen(string $method, ?int $id): void
             dosen_destroy($id);
             return;
         default:
-            header('Allow: GET, PUT, PATCH, DELETE');
+            header('Allow: GET, PUT, PATCH, DELETE, OPTIONS');
             json_response(false, 'Metode request tidak diizinkan untuk endpoint ini', null, 405);
     }
 }
@@ -126,7 +134,7 @@ function handle_dosen(string $method, ?int $id): void
  * GET /api/dosen — daftar dosen + pagination + pencarian + filter.
  *
  * Parameter query:
- *   - search              cari di nama / nip / nuptk (sebagian)
+ *   - search              cari di nama / nip / nuptk (mengandung, bukan persis)
  *   - status_pegawai      filter persis
  *   - status_aktivitas    filter persis
  *   - jabatan_fungsional  filter persis
@@ -138,7 +146,7 @@ function dosen_index(): void
     $where  = [];
     $params = [];
 
-    // Pencarian teks: nama, NIP, NUPTK
+    // Pencarian teks: nama, NIP, NUPTK.
     $search = query_str('search', 100);
     if ($search !== '') {
         // Escape karakter khusus LIKE (%, _, !) agar input tidak jadi wildcard.
@@ -225,7 +233,7 @@ function dosen_store(): void
         $params[":$column"] = $data[$column];
     }
 
-    $sql = 'INSERT INTO dosen (`' . implode('`, `', $columns) . '`) VALUES (' . implode(', ', $marks) . ')';
+    $sql  = 'INSERT INTO dosen (`' . implode('`, `', $columns) . '`) VALUES (' . implode(', ', $marks) . ')';
     $stmt = db()->prepare($sql);
     $stmt->execute($params);
 
@@ -239,17 +247,15 @@ function dosen_store(): void
  */
 function dosen_replace(int $id): void
 {
-    $body  = read_json_body();
-    $rules = dosen_rules(true);
-
     if (dosen_find($id) === null) {
         json_response(false, 'Data dosen tidak ditemukan', null, 404);
     }
 
-    $data = validate_fields($body, $rules);
+    $body  = read_json_body();
+    $data  = validate_fields($body, dosen_rules(true));
 
     $values = [];
-    foreach (array_keys($rules) as $column) {
+    foreach (array_keys(dosen_rules(false)) as $column) {
         $values[$column] = $data[$column] ?? null;
     }
     dosen_write($id, $values);
@@ -263,11 +269,11 @@ function dosen_replace(int $id): void
  */
 function dosen_patch(int $id): void
 {
-    $body = read_json_body();
-
     if (dosen_find($id) === null) {
         json_response(false, 'Data dosen tidak ditemukan', null, 404);
     }
+
+    $body = read_json_body();
 
     // PATCH: tidak ada kolom wajib.
     $data = validate_fields($body, dosen_rules(false));

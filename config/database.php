@@ -4,29 +4,49 @@ declare(strict_types=1);
 /**
  * Konfigurasi & koneksi database (PDO) untuk SIM Dosen API.
  *
- * Kredensial dibaca dari environment variable bila lingkungan mendukung:
- *   DB_HOST  (default: 127.0.0.1)
- *   DB_PORT  (default: 3306)
- *   DB_NAME  (default: sim_dosen)
- *   DB_USER  (default: root)
- *   DB_PASS  (default: string kosong, seperti instalasi XAMPP standar)
+ * Konfigurasi dibaca lewat getenv() (lihat config/env.php):
+ *   DB_HOST      (default: 127.0.0.1)
+ *   DB_PORT      (default: 3306)
+ *   DB_DATABASE  (default: sim_dosen)  — alias lama: DB_NAME
+ *   DB_USERNAME  (default: root)       — alias lama: DB_USER
+ *   DB_PASSWORD  (default: "" / kosong, seperti XAMPP standar)
+ *                                        — alias lama: DB_PASS
  *
- * Database `sim_dosen` dan tabelnya dianggap sudah tersedia;
- * kode ini TIDAK membuat database/tabel apa pun.
+ * Database `sim_dosen` beserta tabelnya dianggap sudah tersedia
+ * (lihat sim_dosen.sql); kode ini TIDAK membuat database/tabel apa pun.
+ *
+ * Password kosong tetap didukung: bila DB_PASSWORD diset menjadi string
+ * kosong, nilai kosong itulah yang dipakai (bukan nilai default).
  */
 
+/**
+ * Exception khusus untuk kegagalan koneksi database.
+ * Pesannya sengaja generik — detail asli (kredensial/DSN) hanya masuk error_log().
+ */
+class DatabaseConnectionException extends RuntimeException
+{
+}
+
+/**
+ * Konfigurasi database dari environment variable (getenv).
+ *
+ * @return array{host: string, port: string, dbname: string, username: string, password: string, charset: string}
+ */
 function db_config(): array
 {
     static $config = null;
 
     if ($config === null) {
-        $password = getenv('DB_PASS');
+        $password = env('DB_PASSWORD', env('DB_PASS', ''));
+
         $config = [
-            'host'     => getenv('DB_HOST') ?: '127.0.0.1',
-            'port'     => getenv('DB_PORT') ?: '3306',
-            'dbname'   => getenv('DB_NAME') ?: 'sim_dosen',
-            'username' => getenv('DB_USER') ?: 'root',
-            'password' => $password === false ? '' : $password,
+            'host'     => env('DB_HOST', '127.0.0.1'),
+            'port'     => env('DB_PORT', '3306'),
+            'dbname'   => env('DB_DATABASE', env('DB_NAME', 'sim_dosen')),
+            'username' => env('DB_USERNAME', env('DB_USER', 'root')),
+            // env() membedakan "tidak diset" (pakai default) dan "diset kosong"
+            // (tetap string kosong) — password kosong = sah.
+            'password' => $password ?? '',
             'charset'  => 'utf8mb4',
         ];
     }
@@ -35,7 +55,9 @@ function db_config(): array
 }
 
 /**
- * Koneksi PDO (singleton) dengan prepared statement sebagai default.
+ * Koneksi PDO (singleton) dengan prepared statement native.
+ *
+ * @throws DatabaseConnectionException Bila gagal terhubung (detail di error_log()).
  */
 function db(): PDO
 {
@@ -45,8 +67,8 @@ function db(): PDO
         return $pdo;
     }
 
-    $c    = db_config();
-    $dsn  = sprintf(
+    $c   = db_config();
+    $dsn = sprintf(
         'mysql:host=%s;port=%s;dbname=%s;charset=%s',
         $c['host'],
         $c['port'],
@@ -58,13 +80,14 @@ function db(): PDO
         $pdo = new PDO($dsn, $c['username'], $c['password'], [
             PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            PDO::ATTR_EMULATE_PREPARES   => false, // native prepared statements
+            PDO::ATTR_EMULATE_PREPARES   => false, // prepared statement asli MySQL
+            PDO::ATTR_STRINGIFY_FETCHES  => false,
         ]);
     } catch (PDOException $e) {
-        // Detail koneksi/SQL hanya dicatat di log server, tidak pernah
-        // dikirim ke klien.
+        // Detail koneksi (host, user, pesan driver) HANYA dicatat di log server,
+        // tidak pernah dikirim ke klien.
         error_log('[sim-dosen-api] Koneksi database gagal: ' . $e->getMessage());
-        json_response(false, 'Tidak dapat terhubung ke database', null, 500);
+        throw new DatabaseConnectionException('Tidak dapat terhubung ke database', 0, $e);
     }
 
     return $pdo;

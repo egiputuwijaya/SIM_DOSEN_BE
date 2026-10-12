@@ -1,0 +1,16 @@
+# Kredensial & environment lokal — jangan pernah di-commit.
+# Salin .env.example menjadi .env lalu sesuaikan.
+.env
+.env.*
+!.env.example
+
+# Konfigurasi rahasia per-instalasi (bila dipakai)
+config/local.php
+*.local.php
+
+# Log server
+*.log
+
+# Sistem
+.DS_Store
+Thumbs.db

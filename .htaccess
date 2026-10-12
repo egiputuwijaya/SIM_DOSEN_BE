@@ -1,7 +1,33 @@
-# Routing REST yang rapi untuk Apache (mod_rewrite).
-# Pastikan mod_rewrite aktif: a2enmod rewrite && service apache2 restart
+# SIM Dosen API — konfigurasi Apache (mod_rewrite + mod_authz_core).
+#
+# Catatan penting:
+#   - .htaccess HANYA dibaca Apache. Nginx / Caddy / PHP built-in server
+#     mengabaikannya — lihat bagian konfigurasi server di README.md.
+#   - Pastikan mod_rewrite aktif: a2enmod rewrite && systemctl restart apache2
+#     dan direktori web mengizinkan override (AllowOverride All).
+
+# Jangan tampilkan daftar file bila folder dibuka langsung.
+Options -Indexes
+DirectoryIndex index.php
+
+# ---------------------------------------------------------------------------
+# Blokir akses HTTP langsung ke file & folder sensitif.
+# ---------------------------------------------------------------------------
+<FilesMatch "^\.env">
+    Require all denied
+</FilesMatch>
+<FilesMatch "(?i)\.sql$">
+    Require all denied
+</FilesMatch>
+
 <IfModule mod_rewrite.c>
     RewriteEngine On
+
+    # Tolak akses langsung ke file konfigurasi & folder internal.
+    # (Direktif <Directory> tidak boleh di .htaccess, jadi pakai RewriteRule.)
+    RewriteRule ^\.env - [F,L]
+    RewriteRule \.sql$ - [F,L]
+    RewriteRule ^(config|helpers|api)(/|$) - [F,L]
 
     # Layani file/folder yang benar-benar ada apa adanya.
     RewriteCond %{REQUEST_FILENAME} -f [OR]
@@ -14,13 +40,14 @@
 
 # ---------------------------------------------------------------------------
 # Kredensial database via environment (opsional, untuk mod_php).
-# Hapus tanda # di bawah lalu sesuaikan. (PHP-FPM: gunakan fastcgi_param.)
+# Hapus tanda # di bawah lalu sesuaikan. (PHP-FPM: gunakan fastcgi_param,
+# karena SetEnv Apache tidak terbaca oleh PHP-FPM.)
 # ---------------------------------------------------------------------------
 # SetEnv DB_HOST 127.0.0.1
 # SetEnv DB_PORT 3306
-# SetEnv DB_NAME sim_dosen
-# SetEnv DB_USER root
-# SetEnv DB_PASS ""
+# SetEnv DB_DATABASE sim_dosen
+# SetEnv DB_USERNAME root
+# SetEnv DB_PASSWORD ""
 #
 # Origin frontend yang diizinkan (pisahkan dengan koma):
 # SetEnv ALLOWED_ORIGINS "http://localhost:3000,https://frontend.example.com"
