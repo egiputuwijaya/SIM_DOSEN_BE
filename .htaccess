@@ -1,0 +1,26 @@
+# Routing REST yang rapi untuk Apache (mod_rewrite).
+# Pastikan mod_rewrite aktif: a2enmod rewrite && service apache2 restart
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Layani file/folder yang benar-benar ada apa adanya.
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # Semua request lain diteruskan ke index.php (front controller).
+    RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# Kredensial database via environment (opsional, untuk mod_php).
+# Hapus tanda # di bawah lalu sesuaikan. (PHP-FPM: gunakan fastcgi_param.)
+# ---------------------------------------------------------------------------
+# SetEnv DB_HOST 127.0.0.1
+# SetEnv DB_PORT 3306
+# SetEnv DB_NAME sim_dosen
+# SetEnv DB_USER root
+# SetEnv DB_PASS ""
+#
+# Origin frontend yang diizinkan (pisahkan dengan koma):
+# SetEnv ALLOWED_ORIGINS "http://localhost:3000,https://frontend.example.com"
