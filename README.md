@@ -18,15 +18,16 @@ PDO, respons JSON konsisten.
 3. [Persiapan Database](#persiapan-database)
 4. [Konfigurasi .env](#konfigurasi-env)
 5. [Menjalankan di Localhost](#menjalankan-di-localhost)
-6. [Daftar Endpoint](#daftar-endpoint)
-7. [Standar Respons JSON](#standar-respons-json)
-8. [Contoh Pengujian dengan curl](#contoh-pengujian-dengan-curl)
-9. [Pengujian dengan Postman](#pengujian-dengan-postman)
-10. [Pengaturan CORS](#pengaturan-cors)
-11. [Keamanan & Perlindungan File Konfigurasi](#keamanan--perlindungan-file-konfigurasi)
-12. [Catatan untuk Nginx & PHP-FPM](#catatan-untuk-nginx--php-fpm)
-13. [Endpoint Tambahan (Tabel Pendukung)](#endpoint-tambahan-tabel-pendukung)
-14. [Troubleshooting](#troubleshooting)
+6. [Autentikasi SSO (SIM_MAHASISWA_BE)](#autentikasi-sso-sim_mahasiswa_be)
+7. [Daftar Endpoint](#daftar-endpoint)
+8. [Standar Respons JSON](#standar-respons-json)
+9. [Contoh Pengujian dengan curl](#contoh-pengujian-dengan-curl)
+10. [Pengujian dengan Postman](#pengujian-dengan-postman)
+11. [Pengaturan CORS](#pengaturan-cors)
+12. [Keamanan & Perlindungan File Konfigurasi](#keamanan--perlindungan-file-konfigurasi)
+13. [Catatan untuk Nginx & PHP-FPM](#catatan-untuk-nginx--php-fpm)
+14. [Endpoint Tambahan (Tabel Pendukung)](#endpoint-tambahan-tabel-pendukung)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -38,7 +39,8 @@ sim-dosen-api/
 │   ├── env.php               # Pembaca .env (PHP murni) + env()
 │   └── database.php          # Koneksi PDO, konfigurasi dari getenv()
 ├── helpers/
-│   └── response.php          # Respons JSON, CORS, baca body, validasi field
+│   ├── response.php          # Respons JSON, CORS, baca body, validasi field
+│   └── auth.php              # Autentikasi SSO (klien SIM_MAHASISWA_BE)
 ├── api/
 │   └── dosen.php             # CRUD dosen + search/filter/pagination
 ├── .env                      # Kredensial lokal (TIDAK di-commit)
@@ -124,6 +126,9 @@ DB_DATABASE=sim_dosen
 DB_USERNAME=root
 DB_PASSWORD=
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8080
+SSO_APP_KEY=
+SSO_BASE_URL=
+SSO_WRITE_ROLES=ADMIN,OPERATOR_PRODI
 ```
 
 | Variabel          | Default     | Keterangan |
@@ -133,6 +138,9 @@ ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:808
 | `DB_DATABASE`     | `sim_dosen` | Nama database |
 | `DB_USERNAME`     | `root`      | Username database |
 | `DB_PASSWORD`     | *(kosong)*  | Password database; **string kosong dihormati** (XAMPP default) |
+| `SSO_APP_KEY`     | *(wajib)*   | Secret SSO yang **sama persis** dengan `.env` SIM_MAHASISWA_BE; kosong = semua endpoint ditolak |
+| `SSO_BASE_URL`    | *(opsional)*| Base URL SIM_MAHASISWA_BE untuk verifikasi hibrida; kosong = verifikasi lokal saja |
+| `SSO_WRITE_ROLES` | `ADMIN,OPERATOR_PRODI` | Role yang boleh menulis data dosen (dipisah koma) |
 | `ALLOWED_ORIGINS` | lihat [CORS](#pengaturan-cors) | Origin frontend yang diizinkan (dipisah koma) |
 
 Aturan pembaca `.env` (`config/env.php`, PHP murni):
@@ -204,10 +212,64 @@ sudo systemctl restart apache2
 
 ---
 
+## Autentikasi SSO (SIM_MAHASISWA_BE)
+
+Login **tidak dibuat sendiri** di API ini — SIM DOSEN BE adalah **klien SSO**
+dari **SIM_MAHASISWA_BE** (penyedia login). Token yang diterbitkan di sana
+dipakai utuh di sini.
+
+**Alur:**
+
+1. Klien login ke SIM_MAHASISWA_BE:
+   `POST {SSO_BASE_URL}/api/v1/login` → mendapat `token`
+   (`base64url(payload).HMAC-SHA256`, payload `{uid, un, role, iat, exp}`,
+   TTL `AUTH_TOKEN_TTL`, default 3600 detik).
+2. Klien memakai token yang sama untuk API ini — sertakan header
+   `Authorization: Bearer <token>` pada **semua** request `/api/*`.
+3. API ini memverifikasi token:
+   - **Lokal** (semua request): hitung ulang HMAC dengan `SSO_APP_KEY` yang
+     sama + cek kadaluarsa (`hash_equals`, timing-safe).
+   - **Remote** (`PUT`/`PATCH`/`DELETE`): `GET {SSO_BASE_URL}/api/v1/verify`
+     agar status akun & role terkini ikut diperiksa. Bila SIM_MAHASISWA_BE
+     tidak terjangkau → respons `503` (jujur, bukan lolos diam-diam).
+
+**Kebijakan akses:**
+
+| Aksi | Method | Syarat |
+|------|--------|--------|
+| Baca (daftar/detail dosen) | `GET` | Token valid — role apa pun |
+| Tulis (tambah/ubah/hapus) | `POST`/`PUT`/`PATCH`/`DELETE` | Token valid + role `ADMIN`/`OPERATOR_PRODI` (sesuai `SSO_WRITE_ROLES`) |
+
+**Status auth:** `401` token tidak ada/kadaluarsa/ditolak SSO · `403` role
+tidak berwenang · `503` layanan SSO tidak terjangkau (mode hibrida) ·
+`500` `SSO_APP_KEY` belum diatur di server.
+
+Catatan:
+
+- API ini sengaja **tidak** menerima token via query string (`?token=`) —
+  mudah bocor ke log akses; hanya header `Authorization`.
+- `SSO_APP_KEY` harus identik di `.env` kedua proyek dan hanya HTTPS.
+- Ambil token untuk pengujian (port/akun disesuaikan SIM_MAHASISWA_BE):
+
+```bash
+TOKEN=$(curl -s -X POST "http://localhost:8001/api/v1/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"rahasia"}' \
+  | php -r 'echo json_decode(stream_get_contents(STDIN), true)["data"]["token"] ?? "";')
+echo "$TOKEN"
+```
+
+---
+
 ## Daftar Endpoint
 
 Base URL contoh: `http://localhost:8000` (built-in) /
 `http://localhost/sim-dosen-api` (Apache).
+
+> **Semua endpoint `/api/*` dilindungi token SSO** (header
+> `Authorization: Bearer <token>`) — lihat
+> [Autentikasi SSO](#autentikasi-sso-sim_mahasiswa_be).
+> Hanya `GET /` yang publik (health check).
 
 | Method | Endpoint               | Keterangan |
 |--------|------------------------|------------|
@@ -251,12 +313,12 @@ Perilaku per method:
 - Semua nilai harus berupa **string atau null**; string kosong pada kolom
   opsional menjadi `NULL`.
 
-### Kode status yang dipakai
-
-`200` OK · `201` Created · `204` Preflight CORS (OPTIONS) · `400` Body/param/ID
-tidak valid · `404` Data/endpoint tidak ditemukan · `405` Method tidak diizinkan
-(disertai header `Allow`) · `422` Validasi gagal (disertai `errors`) ·
-`500` Kesalahan server (pesan generik; detail hanya di `error_log()`).
+### Kode status yang dipakai`200` OK · `201` Created · `204` Preflight CORS (OPTIONS) · `400` Body/param/ID
+tidak valid · `401` Token SSO tidak ada/tidak valid/kadaluarsa · `403` Role
+tidak berwenang · `404` Data/endpoint tidak ditemukan · `405` Method tidak
+diizinkan (disertai header `Allow`) · `422` Validasi gagal (disertai `errors`)
+· `500` Kesalahan server (pesan generik; detail hanya di `error_log()`) ·
+`503` Layanan verifikasi SSO tidak tersedia.
 
 ---
 
@@ -317,22 +379,31 @@ Validasi gagal (`422`) menambahkan `errors` per kolom:
 
 ## Contoh Pengujian dengan curl
 
-Ganti base URL sesuai instalasi Anda.
+Ganti base URL sesuai instalasi Anda. **Semua request `/api/*` memerlukan
+token SSO** (lihat [Autentikasi SSO](#autentikasi-sso-sim_mahasiswa_be)) —
+set dulu sekali per sesi:
+
+```bash
+TOKEN="<token dari SIM_MAHASISWA_BE>"
+```
+
+Lalu sertakan `-H "Authorization: Bearer $TOKEN"` pada setiap request
+(sudah disertai pada contoh di bawah).
 
 ### 1. Daftar dosen (pagination + pencarian + filter)
 
 ```bash
-curl "http://localhost:8000/api/dosen?page=1&per_page=2"
-curl "http://localhost:8000/api/dosen?search=Siti"
-curl "http://localhost:8000/api/dosen?search=1982"
-curl "http://localhost:8000/api/dosen?status_pegawai=Tidak+Tetap"
-curl "http://localhost:8000/api/dosen?status_aktivitas=Mengajar&jabatan_fungsional=Lektor"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen?page=1&per_page=2"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen?search=Siti"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen?search=1982"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen?status_pegawai=Tidak+Tetap"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen?status_aktivitas=Mengajar&jabatan_fungsional=Lektor"
 ```
 
 ### 2. Detail dosen
 
 ```bash
-curl "http://localhost:8000/api/dosen/2"
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen/2"
 ```
 
 ```json
@@ -349,6 +420,7 @@ ID tidak ditemukan → `404`; ID bukan angka (mis. `/api/dosen/abc`) → `400`.
 
 ```bash
 curl -X POST "http://localhost:8000/api/dosen" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "nama": "Dr. Rina Marlina, M.Kom.",
@@ -387,6 +459,7 @@ Kolom di luar whitelist (mis. `created_at`) → `422`
 
 ```bash
 curl -X PUT "http://localhost:8000/api/dosen/6" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "nama": "Andi Wijaya, S.T., M.T.",
@@ -401,6 +474,7 @@ Kolom whitelist yang tidak dikirim (mis. `nuptk`, `penempatan`) menjadi `NULL`.
 
 ```bash
 curl -X PATCH "http://localhost:8000/api/dosen/7" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status_aktivitas": "Cuti", "penempatan": "Gedung F"}'
 ```
@@ -410,7 +484,7 @@ Body `{}` (tanpa kolom) → `422`.
 ### 6. Hapus dosen
 
 ```bash
-curl -X DELETE "http://localhost:8000/api/dosen/7"
+curl -X DELETE -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/dosen/7"
 ```
 
 ```json
@@ -463,7 +537,12 @@ Keduanya → `404` (data JSON), tanpa membocorkan isi file.
 4. Klik **Send**. Cek status code (200/201/404/422/dst.) dan respons JSON.
 5. (Opsional) uji preflight CORS: method `OPTIONS`, tambahkan header
    `Origin: http://localhost:3000` dan `Access-Control-Request-Method: POST`.
-6. (Opsional) simpan request ke Collection `SIM Dosen API` agar bisa
+6. (Opsional) uji preflight CORS: method `OPTIONS`, tambahkan header
+   `Origin: http://localhost:3000` dan `Access-Control-Request-Method: POST`.
+7. Untuk semua request `/api/*`: tab **Authorization** → Type **Bearer Token**
+   → tempel token dari login SIM_MAHASISWA_BE (tanpa prefix `Bearer ` —
+   Postman menambahkannya otomatis).
+8. (Opsional) simpan request ke Collection `SIM Dosen API` agar bisa
    dipakai ulang/dibagikan ke tim.
 
 ---
@@ -499,6 +578,9 @@ Perilaku:
 
 Sudah diterapkan:
 
+- **Autentikasi SSO** — semua endpoint `/api/*` memerlukan token dari
+  SIM_MAHASISWA_BE (verifikasi HMAC lokal + remote untuk aksi sensitif),
+  dengan pembatasan role per method — lihat [Autentikasi SSO](#autentikasi-sso-sim_mahasiswa_be).
 - **Prepared statement** PDO (`ATTR_EMULATE_PREPARES = false`); karakter
   khusus LIKE (`%`, `_`, `!`) di-escape agar input pencarian tidak menjadi wildcard.
 - **Whitelist kolom**: request hanya diterima untuk kolom yang ada di skema;
@@ -516,14 +598,14 @@ Sudah diterapkan:
     (`block_sensitive_path()`) → HTTP `404`.
   - Nginx: blokir via `location` — lihat [bagian Nginx](#catatan-untuk-nginx--php-fpm).
 
-> ### ⚠️ Sebelum dipakai di produksi
+> ### ✅ Autentikasi sudah terpasang
 >
-> Endpoint perubahan data (`POST`, `PUT`, `PATCH`, `DELETE`) saat ini
-> **belum memiliki autentikasi/otorisasi** — sesuai lingkup pembuatan awal.
-> Sebelum eksploitasi publik, lindungi endpoint tersebut, mis. dengan
-> API key pada header `Authorization: Bearer <key>` (dicek di `index.php`
-> sebelum routing), Basic Auth, atau JWT/OAuth untuk login frontend.
-> Jangan tayangkan endpoint perubahan data tanpa lapisan tersebut.
+> Endpoint perubahan data terlindungi **SSO dari SIM_MAHASISWA_BE**:
+> token HMAC (`SSO_APP_KEY` identik di kedua proyek), role-based
+> (`ADMIN`/`OPERATOR_PRODI` untuk tulis), dan verifikasi remote
+> (`SSO_BASE_URL`) untuk PUT/PATCH/DELETE. Yang perlu dijaga di produksi:
+> `SSO_APP_KEY` hanya di `.env`, komunikasi HTTPS, dan sinkronisasi jam
+> antar server (token memakai `exp` berbasis waktu).
 
 Tips produksi: jalankan di HTTPS, batasi rate pada endpoint tulis,
 aktifkan backup database berkala.
@@ -581,8 +663,8 @@ menyediakan resource `dosen`; **tidak ada tabel/kolom yang dikarang**.
 Bila skema dikembangkan nanti, tambahkan resource baru dengan pola yang sama
 (buat file `api/<resource>.nya` + daftarkan di router `index.php`), misalnya:
 
-- Tabel **`users`** (autentikasi) → endpoint `/api/users` + lapisan login
-  untuk melindungi endpoint tulis (lihat catatan produksi).
+- Tabel **`users`** — tidak diperlukan untuk autentikasi: API ini sudah
+  memakai SSO dari SIM_MAHASISWA_BE (lihat [Autentikasi SSO](#autentikasi-sso-sim_mahasiswa_be)).
 - Tabel **`riwayat_pendidikan` / `riwayat_pengajaran`** dengan FK ke
   `dosen.id` → endpoint `/api/dosen/{id}/riwayat-...` (nested resource).
 
@@ -594,6 +676,10 @@ Pastikan setiap kolom endpoint baru benar-benar ada di tabel terkait.
 
 | Gejala | Solusi |
 |--------|--------|
+| `401 Token tidak ditemukan` / `Token tidak valid atau kadaluarsa` | Sertakan header `Authorization: Bearer <token>`; token diambil dari `POST /api/v1/login` SIM_MAHASISWA_BE; pastikan `SSO_APP_KEY` **sama persis** di kedua `.env` dan server sudah sinkron jamnya |
+| `500 Autentikasi belum dikonfigurasi pada server` | `SSO_APP_KEY` masih kosong di `.env` API dosen — isi dengan APP_KEY milik SIM_MAHASISWA_BE |
+| `403 Role "..." tidak memiliki akses` | Pemakai bukan ADMIN/OPERATOR_PRODI — tambah role di `SSO_WRITE_ROLES` bila memang berwenang |
+| `503 Layanan verifikasi SSO tidak tersedia` | `SSO_BASE_URL` salah atau SIM_MAHASISWA_BE sedang mati — aksi sensitif (PUT/PATCH/DELETE) ditahan; GET tetap jalan (verifikasi lokal) |
 | URL `/api/dosen` mengembalikan `404`/`403` dari Apache (bukan JSON) | `mod_rewrite` belum aktif (`a2enmod rewrite`) atau `AllowOverride` bukan `All` |
 | Halaman 500 kosong | Cek log error Apache (`/var/log/apache2/error.log`) atau lihat output terminal `php -S`; API sengaja tidak menampilkan detail error ke klien |
 | `{"success":false,"message":"Tidak dapat terhubung ke database",...}` | Periksa `DB_HOST/DB_PORT/DB_DATABASE/DB_USERNAME/DB_PASSWORD`, pastikan database `sim_dosen` sudah di-import; detail ada di `error_log()` |
@@ -605,4 +691,6 @@ Pastikan setiap kolom endpoint baru benar-benar ada di tabel terkait.
 
 Diuji dengan PHP 8.3 + MariaDB 10.11 (PHP built-in server maupun Apache).
 Seluruh endpoint, kode status, pagination, pencarian, filter, validasi,
-CORS, dan blokir file sensitif diuji end-to-end terhadap skema `sim_dosen.sql`.
+CORS, blokir file sensitif, serta autentikasi SSO (token valid/tidak
+sah/kadaluarsa, role, verifikasi remote) diuji end-to-end terhadap skema
+`sim_dosen.sql`.

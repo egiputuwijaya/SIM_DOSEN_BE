@@ -17,6 +17,7 @@ error_reporting(E_ALL);
 
 require __DIR__ . '/config/env.php';       // Pembaca .env (PHP murni).
 require __DIR__ . '/helpers/response.php';
+require __DIR__ . '/helpers/auth.php';      // Autentikasi SSO (klien SIM_MAHASISWA_BE).
 require __DIR__ . '/config/database.php';
 
 // Muat .env hanya bila ada; environment variable asli tetap lebih prioritas.
@@ -98,6 +99,11 @@ function route(string $method, string $path): void
         return;
     }
 
+    // Semua endpoint /api/* memerlukan token SSO dari SIM_MAHASISWA_BE;
+    // token diverifikasi lokal (HMAC) dan untuk PUT/PATCH/DELETE juga
+    // diverifikasi ke SIM_MAHASISWA_BE bila SSO_BASE_URL diatur.
+    auth_guard($method);
+
     // Bagi path menjadi segmen; abaikan segmen kosong ganda.
     $segments = array_values(array_filter(explode('/', $path), static fn (string $s): bool => $s !== ''));
 
@@ -155,6 +161,9 @@ function home_endpoint(): void
             ['method' => 'PATCH',  'path' => '/api/dosen/{id}', 'keterangan' => 'Perbarui sebagian data dosen'],
             ['method' => 'DELETE', 'path' => '/api/dosen/{id}', 'keterangan' => 'Hapus dosen'],
         ],
+        'autentikasi' => 'Semua endpoint /api/* memerlukan header "Authorization: Bearer <token>" '
+            . 'dari SIM_MAHASISWA_BE. Tulis (POST/PUT/PATCH/DELETE) terbatas untuk role '
+            . 'ADMIN & OPERATOR_PRODI.',
         'dokumentasi' => 'Lihat README.md',
     ], 200);
 }
